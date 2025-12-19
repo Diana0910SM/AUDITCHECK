@@ -1,0 +1,5 @@
+{
+  "name": "Space aduanas AuditCheck",
+  "description": "Herramienta avanzada para el cotejo automático de proformas de pedimentos y archivos de validación, detectando discrepancias en fracciones, cantidades, valores y más, con soporte para consolidación de partidas.",
+  "requestFramePermissions": []
+}
