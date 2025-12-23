@@ -16,6 +16,7 @@ const IDENTIFICADOR_SCHEMA = {
 const PARTIDA_SCHEMA = {
   type: Type.OBJECT,
   properties: {
+    numeroPartida: { type: Type.INTEGER, description: "Número secuencial de la partida (1, 2, 3...)" },
     fraccion: { type: Type.STRING },
     nico: { type: Type.STRING },
     umc: { type: Type.STRING },
@@ -25,9 +26,10 @@ const PARTIDA_SCHEMA = {
     pesoBruto: { type: Type.NUMBER },
     valorDlls: { type: Type.NUMBER },
     bultos: { type: Type.NUMBER },
-    identificadores: { type: Type.ARRAY, items: IDENTIFICADOR_SCHEMA }
+    identificadores: { type: Type.ARRAY, items: IDENTIFICADOR_SCHEMA },
+    observaciones: { type: Type.STRING, description: "TEXTO COMPLETO E ÍNTEGRO de las OBSERVACIONES A NIVEL PARTIDA. Si la partida continúa en la siguiente página, concatena las observaciones correspondientes." }
   },
-  required: ["fraccion", "nico", "cantidadUmc", "valorDlls"]
+  required: ["numeroPartida", "fraccion", "nico", "cantidadUmc", "valorDlls"]
 };
 
 const PEDIMENTO_SCHEMA = {
@@ -51,15 +53,18 @@ export const extractPedimentoData = async (fileBase64: string, mimeType: string)
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const model = "gemini-3-pro-preview";
   
-  const prompt = `Analiza este documento de pedimento. Extrae la información del encabezado y de todas las partidas.
-  Pon especial atención en:
-  1. La tabla "IDENTIFICADORES A NIVEL PEDIMENTO": Extrae la CLAVE y sus COMPLEMENTOS 1, 2 y 3.
-  2. Identificadores como V1 y IM son críticos.
-  3. Campos de encabezado resaltados: Num. Pedimento, Peso Bruto, Valor Dolares, Bultos.
-  4. Detalle de PARTIDAS: Fracción, NICO, UMC, Cantidad UMC, UMT, Cantidad UMT, y sus Identificadores asociados.
+  const prompt = `Analiza detalladamente este pedimento aduanero. 
   
-  Si el documento es una proforma PDF o un archivo de validación (.VAL), interpreta los registros adecuadamente.
-  Para los identificadores, si solo hay Clave y Compl 1, deja los demás vacíos.`;
+  REGLA CRÍTICA PARA DOCUMENTOS MULTIPÁGINA:
+  Un pedimento puede tener muchas páginas. Si una partida comienza al final de una página y sus observaciones o datos continúan en la siguiente, DEBES unificar toda la información en un solo objeto de partida. 
+  Es común que la sección "OBSERVACIONES A NIVEL PARTIDA" aparezca en la página siguiente a donde aparece la fracción arancelaria. Busca proactivamente el campo "FRACCION ORIGINAL" dentro de estas observaciones.
+  
+  REGLA DE ORO PARA OBSERVACIONES:
+  Para cada partida, extrae TODO el texto del bloque "OBSERVACIONES A NIVEL PARTIDA". No omitas nada. Si dice "FRACCION ORIGINAL" seguido de un número, asegúrate de capturar ese número completo (8 a 10 dígitos).
+  
+  Extrae también:
+  1. IDENTIFICADORES A NIVEL PEDIMENTO (Clave y sus complementos).
+  2. Datos de cada PARTIDA (Número de partida, Fracción, NICO, UMC, Cantidades, Valor Dlls).`;
 
   const response = await ai.models.generateContent({
     model,

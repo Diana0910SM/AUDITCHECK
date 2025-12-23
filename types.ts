@@ -7,6 +7,7 @@ export interface Identificador {
 }
 
 export interface PedimentoPartida {
+  numeroPartida?: number;
   fraccion: string;
   nico: string;
   umc: string;
@@ -17,6 +18,11 @@ export interface PedimentoPartida {
   valorDlls: number;
   bultos: number;
   identificadores: Identificador[];
+  observaciones?: string;
+  // Campos para trazabilidad
+  originalFraccion?: string;
+  reglaOctavaAplicada?: boolean;
+  partidasAgrupadas?: number[]; // Para mostrar qué partidas se consolidaron
 }
 
 export interface PedimentoData {

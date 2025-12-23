@@ -8,6 +8,7 @@ import { PedimentoData, ComparisonDetail, ProcessingState, PedimentoPartida, Hea
 const App: React.FC = () => {
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
+  const [reglaOctava, setReglaOctava] = useState<boolean>(false);
   const [processing, setProcessing] = useState<ProcessingState>({ isProcessing: false, step: '' });
   const [results, setResults] = useState<ComparisonDetail[]>([]);
   const [headerResults, setHeaderResults] = useState<HeaderComparison[]>([]);
@@ -21,26 +22,71 @@ const App: React.FC = () => {
     });
   };
 
+  const applyReglaOctavaLogic = (data: PedimentoData): PedimentoData => {
+    if (!reglaOctava) return data;
+
+    const updatedPartidas = data.partidas.map(p => {
+      // Si la fracción inicia con 98, buscamos la original en observaciones
+      if (p.fraccion && p.fraccion.toString().startsWith('98')) {
+        if (p.observaciones) {
+          // Limpiamos el texto de observaciones de saltos de línea para que el regex sea más efectivo
+          const cleanObs = p.observaciones.replace(/\n/g, ' ').replace(/\s+/g, ' ');
+          
+          // Regex mejorado para capturar "FRACCION ORIGINAL", "FRAC ORIGINAL", "FRAC ORIG", etc.
+          // Soporta formatos como "FRACCION ORIGINAL: 1234567890" o "FRACCION ORIGINAL 12345678"
+          const regex = /(?:FRACCION|FRAC\.?|FRACC)\s+(?:ORIGINAL|ORIG\.?|REAL)[:\-\s]*([0-9\.\s\-]{8,15})/i;
+          const match = cleanObs.match(regex);
+          
+          if (match && match[1]) {
+            const rawFound = match[1].replace(/[^0-9]/g, '');
+            if (rawFound.length >= 8) {
+              const newFraccion = rawFound.substring(0, 8);
+              const newNico = rawFound.length >= 10 ? rawFound.substring(8, 10) : p.nico;
+              
+              return {
+                ...p,
+                originalFraccion: p.fraccion,
+                fraccion: newFraccion,
+                nico: newNico,
+                reglaOctavaAplicada: true
+              };
+            }
+          }
+        }
+      }
+      return p;
+    });
+
+    return { ...data, partidas: updatedPartidas };
+  };
+
   const homogenizeData = (data: PedimentoData): Map<string, PedimentoPartida> => {
     const grouped = new Map<string, PedimentoPartida>();
     data.partidas.forEach(p => {
       const key = `${p.fraccion}-${p.nico}`;
       if (grouped.has(key)) {
         const existing = grouped.get(key)!;
-        existing.cantidadUmc += p.cantidadUmc;
-        existing.cantidadUmt += p.cantidadUmt;
-        existing.valorDlls += p.valorDlls;
-        existing.pesoBruto += p.pesoBruto;
-        existing.bultos += p.bultos;
+        existing.cantidadUmc += p.cantidadUmc || 0;
+        existing.cantidadUmt += p.cantidadUmt || 0;
+        existing.valorDlls += p.valorDlls || 0;
+        existing.pesoBruto += p.pesoBruto || 0;
+        existing.bultos += p.bultos || 0;
+        if (p.numeroPartida) {
+           existing.partidasAgrupadas = [...(existing.partidasAgrupadas || []), p.numeroPartida];
+        }
+        if (p.reglaOctavaAplicada) existing.reglaOctavaAplicada = true;
       } else {
-        grouped.set(key, { ...p });
+        const pCopy = { ...p };
+        if (p.numeroPartida) pCopy.partidasAgrupadas = [p.numeroPartida];
+        grouped.set(key, pCopy);
       }
     });
     return grouped;
   };
 
   const getIdentificadorString = (ids: Identificador[], clave: string): string => {
-    const found = ids.find(i => i.clave.toUpperCase() === clave.toUpperCase());
+    if (!ids) return 'N/A';
+    const found = ids.find(i => i.clave && i.clave.toUpperCase() === clave.toUpperCase());
     if (!found) return 'N/A';
     return [found.complemento1, found.complemento2, found.complemento3]
       .filter(c => c && c.trim() !== '')
@@ -79,7 +125,7 @@ const App: React.FC = () => {
         const tolerance = f.key === 'bultos' || f.key === 'numPartidas' ? 0.1 : 0.01;
         status = Math.abs(valA - valB) <= tolerance ? 'match' : 'mismatch';
       } else {
-        status = String(valA).trim().toLowerCase() === String(valB).trim().toLowerCase() ? 'match' : 'mismatch';
+        status = String(valA || '').trim().toLowerCase() === String(valB || '').trim().toLowerCase() ? 'match' : 'mismatch';
       }
 
       return { field: f.name, valA, valB, status };
@@ -89,16 +135,21 @@ const App: React.FC = () => {
   const handleCompare = async () => {
     if (!fileA || !fileB) return;
 
-    setProcessing({ isProcessing: true, step: 'Procesando documentos...' });
+    setProcessing({ isProcessing: true, step: 'Ejecutando cotejo inteligente...' });
     setResults([]);
     setHeaderResults([]);
 
     try {
       const [b64A, b64B] = await Promise.all([fileToBase64(fileA), fileToBase64(fileB)]);
-      const [dataA, dataB] = await Promise.all([
+      let [dataA, dataB] = await Promise.all([
         extractPedimentoData(b64A, fileA.type),
         extractPedimentoData(b64B, fileB.type)
       ]);
+
+      if (reglaOctava) {
+        dataA = applyReglaOctavaLogic(dataA);
+        dataB = applyReglaOctavaLogic(dataB);
+      }
 
       setHeaderResults(compareHeader(dataA, dataB));
 
@@ -116,11 +167,9 @@ const App: React.FC = () => {
         } else {
           const diffFraccion = pA.fraccion !== pB.fraccion;
           const diffNico = pA.nico !== pB.nico;
-          const diffUmc = pA.umc !== pB.umc;
-          const diffCantUmc = Math.abs(pA.cantidadUmc - pB.cantidadUmc) > 0.01;
-          const diffUmt = pA.umt !== pB.umt;
-          const diffCantUmt = Math.abs(pA.cantidadUmt - pB.cantidadUmt) > 0.01;
-          hasDiff = diffFraccion || diffNico || diffUmc || diffCantUmc || diffUmt || diffCantUmt;
+          const diffCantUmc = Math.abs((pA.cantidadUmc || 0) - (pB.cantidadUmc || 0)) > 0.01;
+          const diffCantUmt = Math.abs((pA.cantidadUmt || 0) - (pB.cantidadUmt || 0)) > 0.01;
+          hasDiff = diffFraccion || diffNico || diffCantUmc || diffCantUmt;
         }
         return { partidaKey: key, pA, pB, hasDiff };
       });
@@ -129,81 +178,103 @@ const App: React.FC = () => {
       setProcessing({ isProcessing: false, step: '' });
     } catch (error: any) {
       console.error(error);
-      setProcessing({ isProcessing: false, step: '', error: error.message || 'Error en el proceso' });
+      setProcessing({ isProcessing: false, step: '', error: error.message || 'Error en el proceso de cotejo' });
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#F4F7FA] pb-20">
-      <header className="bg-[#003b8e] text-white py-5 shadow-xl border-b-[6px] border-[#6d6e71]">
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-slate-100 via-slate-50 to-blue-50 pb-24 text-slate-900">
+      <header className="bg-white/90 backdrop-blur-md border-b border-slate-200 py-4 shadow-sm sticky top-0 z-50">
         <div className="container mx-auto px-6 flex justify-between items-center">
           <div className="flex items-center space-x-6">
-            <div className="bg-white p-2 rounded-lg shadow-inner">
+            <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100">
               <img 
-                src="https://media.licdn.com/dms/image/v2/C4E0BAQE8Z6X9P0fWjg/company-logo_200_200/company-logo_200_200/0/1630635294524?e=2147483647&v=beta&t=Uv797f2E2h69B_u_P6z9Vp7f8S1P6v7V6J7J7J7J7J" 
-                alt="SPACE Logo" 
-                className="h-12 w-auto object-contain"
+                src="https://tickets.spaceti.cloud/web/image/website/1/logo/Space%20Aduanas?unique=8cd703e" 
+                alt="Space Aduanas Logo" 
+                className="h-10 w-auto object-contain"
               />
             </div>
             <div className="flex flex-col">
-              <h1 className="text-2xl font-black tracking-tight uppercase italic leading-none">AuditCheck</h1>
-              <span className="text-sm font-bold tracking-widest text-[#4a90e2] uppercase mt-1">Space aduanas</span>
+              <h1 className="text-xl font-black tracking-tighter text-[#003b8e] uppercase leading-none">AuditCheck</h1>
+              <span className="text-[10px] font-bold tracking-[0.2em] text-slate-400 uppercase">Inteligencia Aduanera</span>
             </div>
           </div>
-          <div className="flex items-center space-x-3">
-             <div className="bg-[#0056b3] px-4 py-1.5 text-white font-bold text-[11px] rounded shadow-sm border border-white/10 uppercase">Pedimento Original</div>
-             <div className="bg-[#4a90e2] px-4 py-1.5 text-white font-bold text-[11px] rounded shadow-sm border border-white/10 uppercase">Cotejo Contraparte</div>
+          <div className="hidden md:flex items-center space-x-2">
+             <span className="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
+             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Terminal de Cotejo v2.0</span>
           </div>
         </div>
       </header>
 
-      <main className="container mx-auto px-6 mt-10 max-w-7xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-          <FileUpload label="Pedimento Base (Proforma/VAL)" selectedFile={fileA} onFileSelect={setFileA} />
-          <FileUpload label="Cotejo Contraparte (Proforma/VAL)" selectedFile={fileB} onFileSelect={setFileB} />
+      <main className="container mx-auto px-6 mt-12 max-w-6xl">
+        <div className="text-center mb-12">
+          <h2 className="text-3xl font-black text-slate-800 tracking-tight text-balance uppercase">Auditoría de Pedimentos</h2>
+          <p className="text-slate-500 mt-2 font-medium">Análisis inteligente para detección de discrepancias y validación de Regla Octava.</p>
         </div>
 
-        <div className="flex justify-center mb-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+          <FileUpload label="Pedimento SPACE" selectedFile={fileA} onFileSelect={setFileA} />
+          <FileUpload label="Pedimento Contraparte" selectedFile={fileB} onFileSelect={setFileB} />
+        </div>
+
+        <div className="flex flex-col items-center space-y-6 mb-12">
+          <label className="inline-flex items-center cursor-pointer group bg-white/70 px-8 py-4 rounded-[2rem] border border-slate-200 hover:border-blue-300 hover:bg-white transition-all shadow-xl shadow-slate-200/50">
+            <input 
+              type="checkbox" 
+              className="sr-only peer" 
+              checked={reglaOctava}
+              onChange={(e) => setReglaOctava(e.target.checked)}
+            />
+            <div className="relative w-14 h-7 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:start-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-[#003b8e]"></div>
+            <div className="ms-5">
+              <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-[#003b8e] transition-colors">Modo Regla Octava</span>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-tight mt-0.5">Sustituye fracciones 98 por fracción real de observaciones</p>
+            </div>
+          </label>
+
           <button
             onClick={handleCompare}
             disabled={!fileA || !fileB || processing.isProcessing}
-            className={`px-16 py-4 rounded-lg font-black text-white transition-all shadow-2xl uppercase tracking-[0.15em] border-b-4 ${
+            className={`group relative overflow-hidden px-14 py-6 rounded-2xl font-black text-white transition-all shadow-2xl uppercase tracking-[0.2em] text-xs ${
               !fileA || !fileB || processing.isProcessing
-              ? 'bg-slate-400 border-slate-500 cursor-not-allowed'
-              : 'bg-[#003b8e] hover:bg-[#002d6b] active:translate-y-1 active:border-b-0 border-[#001f4d]'
+              ? 'bg-slate-300 cursor-not-allowed grayscale'
+              : 'bg-[#003b8e] hover:bg-[#002b66] hover:shadow-blue-900/30 hover:-translate-y-1 active:translate-y-0 active:shadow-none'
             }`}
           >
-            {processing.isProcessing ? 'Analizando Documentos...' : 'Iniciar Auditoría de Pedimento'}
+            <span className="relative z-10">
+              {processing.isProcessing ? 'Procesando Inteligencia...' : 'Ejecutar Auditoría'}
+            </span>
           </button>
         </div>
 
         {processing.error && (
-          <div className="bg-red-50 border-l-4 border-red-600 text-red-800 p-5 mb-10 rounded-r-lg shadow-md flex items-start animate-pulse">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-3 text-red-600 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
+          <div className="bg-rose-50 border border-rose-200 text-rose-800 p-8 mb-12 rounded-[2rem] shadow-2xl flex items-start space-x-4 animate-in fade-in zoom-in-95">
+            <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
             <div>
-              <p className="font-bold uppercase text-xs mb-1">Error Detectado</p>
-              <p className="text-sm">{processing.error}</p>
+              <h3 className="font-black uppercase text-xs tracking-widest mb-1">Error crítico en el proceso</h3>
+              <p className="text-sm font-semibold opacity-80">{processing.error}</p>
             </div>
           </div>
         )}
 
         {headerResults.length > 0 && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="bg-white p-6 rounded-xl shadow-2xl border border-slate-200">
-              <div className="flex items-center space-x-2 mb-6 border-b border-slate-100 pb-4">
-                <div className="w-2 h-8 bg-[#003b8e] rounded-full"></div>
-                <h2 className="text-xl font-bold text-slate-800 uppercase tracking-tight">Resultados del Cotejo Automático</h2>
-              </div>
-              <ComparisonTable headerDiffs={headerResults} partidaDiffs={results} />
-            </div>
+          <div className="animate-in fade-in slide-in-from-bottom-12 duration-1000">
+            <ComparisonTable headerDiffs={headerResults} partidaDiffs={results} />
           </div>
         )}
       </main>
 
-      <footer className="mt-20 py-8 border-t border-slate-200 text-center text-slate-400 text-[10px] uppercase font-bold tracking-[0.3em]">
-        © {new Date().getFullYear()} SPACE - Servicios y Productos para Aduanas y Comercio Exterior
+      <footer className="mt-24 py-16 border-t border-slate-200 text-center">
+        <div className="container mx-auto px-6">
+          <img src="https://tickets.spaceti.cloud/web/image/website/1/logo/Space%20Aduanas?unique=8cd703e" className="h-8 w-auto mx-auto mb-8 opacity-50" alt="Space Footer" />
+          <p className="text-slate-400 text-[10px] uppercase font-bold tracking-[0.5em] mt-8">
+            &copy; {new Date().getFullYear()} SPACE ADUANAS &bull; CORPORATE TECH SOLUTIONS
+          </p>
+        </div>
       </footer>
     </div>
   );
