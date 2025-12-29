@@ -138,7 +138,6 @@ const App: React.FC = () => {
       
       setProcessing(prev => ({ ...prev, step: 'Analizando AMBOS pedimentos en paralelo...', progress: 40 }));
       
-      // PROCESAMIENTO EN PARALELO: Esto ahorra mucho tiempo
       const [dataA, dataB] = await Promise.all([
         extractPedimentoData(b64A, fileA.type),
         extractPedimentoData(b64B, fileB.type)
@@ -229,7 +228,7 @@ const App: React.FC = () => {
             />
             <div className="relative w-14 h-7 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:start-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-[#003b8e]"></div>
             <div className="ms-5">
-              <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-[#003b8e] transition-colors">Modo Regla Octava</span>
+              <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-[#003b8e] transition-colors">Regla Octava</span>
               <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-tight mt-0.5">Sustituye fracciones 98 por fracción real de observaciones</p>
             </div>
           </label>
@@ -297,7 +296,7 @@ const App: React.FC = () => {
         <div className="container mx-auto px-6">
           <img src="https://tickets.spaceti.cloud/web/image/website/1/logo/Space%20Aduanas?unique=8cd703e" className="h-8 w-auto mx-auto mb-8 opacity-50" alt="Space Footer" />
           <p className="text-slate-400 text-[10px] uppercase font-bold tracking-[0.5em] mt-8">
-            &copy; {new Date().getFullYear()} SPACE ADUANAS &bull; CORPORATE TECH SOLUTIONS
+            &copy; {new Date().getFullYear()} SPACE ADUANAS
           </p>
         </div>
       </footer>
