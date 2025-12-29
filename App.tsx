@@ -9,7 +9,7 @@ const App: React.FC = () => {
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
   const [reglaOctava, setReglaOctava] = useState<boolean>(false);
-  const [processing, setProcessing] = useState<ProcessingState>({ isProcessing: false, step: '' });
+  const [processing, setProcessing] = useState<ProcessingState>({ isProcessing: false, step: '', progress: 0 });
   const [results, setResults] = useState<ComparisonDetail[]>([]);
   const [headerResults, setHeaderResults] = useState<HeaderComparison[]>([]);
 
@@ -26,28 +26,20 @@ const App: React.FC = () => {
     if (!reglaOctava) return data;
 
     const updatedPartidas = data.partidas.map(p => {
-      // Si la fracción inicia con 98, buscamos la original en observaciones
       if (p.fraccion && p.fraccion.toString().startsWith('98')) {
         if (p.observaciones) {
-          // Limpiamos el texto de observaciones de saltos de línea para que el regex sea más efectivo
           const cleanObs = p.observaciones.replace(/\n/g, ' ').replace(/\s+/g, ' ');
-          
-          // Regex mejorado para capturar "FRACCION ORIGINAL", "FRAC ORIGINAL", "FRAC ORIG", etc.
-          // Soporta formatos como "FRACCION ORIGINAL: 1234567890" o "FRACCION ORIGINAL 12345678"
           const regex = /(?:FRACCION|FRAC\.?|FRACC)\s+(?:ORIGINAL|ORIG\.?|REAL)[:\-\s]*([0-9\.\s\-]{8,15})/i;
           const match = cleanObs.match(regex);
           
           if (match && match[1]) {
             const rawFound = match[1].replace(/[^0-9]/g, '');
             if (rawFound.length >= 8) {
-              const newFraccion = rawFound.substring(0, 8);
-              const newNico = rawFound.length >= 10 ? rawFound.substring(8, 10) : p.nico;
-              
               return {
                 ...p,
                 originalFraccion: p.fraccion,
-                fraccion: newFraccion,
-                nico: newNico,
+                fraccion: rawFound.substring(0, 8),
+                nico: rawFound.length >= 10 ? rawFound.substring(8, 10) : p.nico,
                 reglaOctavaAplicada: true
               };
             }
@@ -102,8 +94,8 @@ const App: React.FC = () => {
       { name: 'Peso Bruto', key: 'pesoBruto' },
       { name: 'Valor Dlls', key: 'valorDlls' },
       { name: 'Bultos', key: 'bultos' },
-      { name: 'V1 (Identificador)', key: 'V1' },
-      { name: 'IM (Identificador)', key: 'IM' },
+      { name: 'V1', key: 'V1' },
+      { name: 'IM', key: 'IM' },
     ];
 
     return fields.map(f => {
@@ -118,14 +110,15 @@ const App: React.FC = () => {
         valB = (b as any)[f.key];
       }
 
+      const valAStr = String(valA || '').trim().toLowerCase();
+      const valBStr = String(valB || '').trim().toLowerCase();
+      
       let status: 'match' | 'mismatch' = 'match';
-      if (valA === undefined || valB === undefined) {
-        status = 'mismatch';
-      } else if (typeof valA === 'number' && typeof valB === 'number') {
+      if (typeof valA === 'number' && typeof valB === 'number') {
         const tolerance = f.key === 'bultos' || f.key === 'numPartidas' ? 0.1 : 0.01;
         status = Math.abs(valA - valB) <= tolerance ? 'match' : 'mismatch';
       } else {
-        status = String(valA || '').trim().toLowerCase() === String(valB || '').trim().toLowerCase() ? 'match' : 'mismatch';
+        status = valAStr === valBStr ? 'match' : 'mismatch';
       }
 
       return { field: f.name, valA, valB, status };
@@ -135,26 +128,35 @@ const App: React.FC = () => {
   const handleCompare = async () => {
     if (!fileA || !fileB) return;
 
-    setProcessing({ isProcessing: true, step: 'Ejecutando cotejo inteligente...' });
+    setProcessing({ isProcessing: true, step: 'Iniciando Auditoría Flash...', progress: 10 });
     setResults([]);
     setHeaderResults([]);
 
     try {
+      setProcessing(prev => ({ ...prev, step: 'Codificando documentos...', progress: 20 }));
       const [b64A, b64B] = await Promise.all([fileToBase64(fileA), fileToBase64(fileB)]);
-      let [dataA, dataB] = await Promise.all([
+      
+      setProcessing(prev => ({ ...prev, step: 'Analizando AMBOS pedimentos en paralelo...', progress: 40 }));
+      
+      // PROCESAMIENTO EN PARALELO: Esto ahorra mucho tiempo
+      const [dataA, dataB] = await Promise.all([
         extractPedimentoData(b64A, fileA.type),
         extractPedimentoData(b64B, fileB.type)
       ]);
 
+      setProcessing(prev => ({ ...prev, step: 'Auditando datos...', progress: 85 }));
+      
+      let finalA = dataA;
+      let finalB = dataB;
       if (reglaOctava) {
-        dataA = applyReglaOctavaLogic(dataA);
-        dataB = applyReglaOctavaLogic(dataB);
+        finalA = applyReglaOctavaLogic(dataA);
+        finalB = applyReglaOctavaLogic(dataB);
       }
 
-      setHeaderResults(compareHeader(dataA, dataB));
+      setHeaderResults(compareHeader(finalA, finalB));
 
-      const mapA = homogenizeData(dataA);
-      const mapB = homogenizeData(dataB);
+      const mapA = homogenizeData(finalA);
+      const mapB = homogenizeData(finalB);
       const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()]));
       
       const partidaDetails: ComparisonDetail[] = allKeys.map(key => {
@@ -175,10 +177,10 @@ const App: React.FC = () => {
       });
 
       setResults(partidaDetails);
-      setProcessing({ isProcessing: false, step: '' });
+      setProcessing({ isProcessing: false, step: '', progress: 100 });
     } catch (error: any) {
       console.error(error);
-      setProcessing({ isProcessing: false, step: '', error: error.message || 'Error en el proceso de cotejo' });
+      setProcessing({ isProcessing: false, step: '', progress: 0, error: error.message || 'Error en el proceso' });
     }
   };
 
@@ -200,8 +202,8 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="hidden md:flex items-center space-x-2">
-             <span className="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
-             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Terminal de Cotejo v2.0</span>
+             <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Motor Flash Optimizado</span>
           </div>
         </div>
       </header>
@@ -232,19 +234,42 @@ const App: React.FC = () => {
             </div>
           </label>
 
-          <button
-            onClick={handleCompare}
-            disabled={!fileA || !fileB || processing.isProcessing}
-            className={`group relative overflow-hidden px-14 py-6 rounded-2xl font-black text-white transition-all shadow-2xl uppercase tracking-[0.2em] text-xs ${
-              !fileA || !fileB || processing.isProcessing
-              ? 'bg-slate-300 cursor-not-allowed grayscale'
-              : 'bg-[#003b8e] hover:bg-[#002b66] hover:shadow-blue-900/30 hover:-translate-y-1 active:translate-y-0 active:shadow-none'
-            }`}
-          >
-            <span className="relative z-10">
-              {processing.isProcessing ? 'Procesando Inteligencia...' : 'Ejecutar Auditoría'}
-            </span>
-          </button>
+          <div className="w-full max-w-md flex flex-col items-center space-y-4">
+            <button
+              onClick={handleCompare}
+              disabled={!fileA || !fileB || processing.isProcessing}
+              className={`group relative overflow-hidden px-14 py-6 rounded-2xl font-black text-white transition-all shadow-2xl uppercase tracking-[0.2em] text-xs w-full ${
+                !fileA || !fileB || processing.isProcessing
+                ? 'bg-slate-300 cursor-not-allowed grayscale'
+                : 'bg-[#003b8e] hover:bg-[#002b66] hover:shadow-blue-900/30 hover:-translate-y-1 active:translate-y-0 active:shadow-none'
+              }`}
+            >
+              <span className="relative z-10">
+                {processing.isProcessing ? 'Procesando con Flash IA...' : 'Ejecutar Auditoría'}
+              </span>
+            </button>
+
+            {processing.isProcessing && (
+              <div className="w-full space-y-2 animate-in fade-in slide-in-from-top-4 duration-500">
+                <div className="flex justify-between items-end">
+                  <span className="text-[9px] font-black text-[#003b8e] uppercase tracking-widest animate-pulse">
+                    {processing.step}
+                  </span>
+                  <span className="text-[10px] font-black text-slate-400">
+                    {processing.progress}%
+                  </span>
+                </div>
+                <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden p-0.5 shadow-inner">
+                  <div 
+                    className="h-full bg-gradient-to-r from-[#003b8e] to-blue-500 rounded-full transition-all duration-700 ease-out relative"
+                    style={{ width: `${processing.progress}%` }}
+                  >
+                    <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite] skew-x-12"></div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {processing.error && (
@@ -255,7 +280,7 @@ const App: React.FC = () => {
               </svg>
             </div>
             <div>
-              <h3 className="font-black uppercase text-xs tracking-widest mb-1">Error crítico en el proceso</h3>
+              <h3 className="font-black uppercase text-xs tracking-widest mb-1">Error en el proceso</h3>
               <p className="text-sm font-semibold opacity-80">{processing.error}</p>
             </div>
           </div>
@@ -276,6 +301,13 @@ const App: React.FC = () => {
           </p>
         </div>
       </footer>
+
+      <style>{`
+        @keyframes shimmer {
+          0% { transform: translateX(-200%) skewX(-15deg); }
+          100% { transform: translateX(200%) skewX(-15deg); }
+        }
+      `}</style>
     </div>
   );
 };

@@ -62,5 +62,6 @@ export interface HeaderComparison {
 export interface ProcessingState {
   isProcessing: boolean;
   step: string;
+  progress: number;
   error?: string;
 }

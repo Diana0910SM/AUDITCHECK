@@ -16,7 +16,7 @@ const IDENTIFICADOR_SCHEMA = {
 const PARTIDA_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    numeroPartida: { type: Type.INTEGER, description: "Número secuencial de la partida (1, 2, 3...)" },
+    numeroPartida: { type: Type.INTEGER },
     fraccion: { type: Type.STRING },
     nico: { type: Type.STRING },
     umc: { type: Type.STRING },
@@ -27,9 +27,9 @@ const PARTIDA_SCHEMA = {
     valorDlls: { type: Type.NUMBER },
     bultos: { type: Type.NUMBER },
     identificadores: { type: Type.ARRAY, items: IDENTIFICADOR_SCHEMA },
-    observaciones: { type: Type.STRING, description: "TEXTO COMPLETO E ÍNTEGRO de las OBSERVACIONES A NIVEL PARTIDA. Si la partida continúa en la siguiente página, concatena las observaciones correspondientes." }
+    observaciones: { type: Type.STRING }
   },
-  required: ["numeroPartida", "fraccion", "nico", "cantidadUmc", "valorDlls"]
+  required: ["numeroPartida", "fraccion", "cantidadUmc", "valorDlls"]
 };
 
 const PEDIMENTO_SCHEMA = {
@@ -51,31 +51,27 @@ const PEDIMENTO_SCHEMA = {
 
 export const extractPedimentoData = async (fileBase64: string, mimeType: string): Promise<PedimentoData> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const model = "gemini-3-pro-preview";
+  // Cambiamos a flash para máxima velocidad
+  const model = "gemini-3-flash-preview";
   
-  const prompt = `Analiza detalladamente este pedimento aduanero. 
-  
-  REGLA CRÍTICA PARA DOCUMENTOS MULTIPÁGINA:
-  Un pedimento puede tener muchas páginas. Si una partida comienza al final de una página y sus observaciones o datos continúan en la siguiente, DEBES unificar toda la información en un solo objeto de partida. 
-  Es común que la sección "OBSERVACIONES A NIVEL PARTIDA" aparezca en la página siguiente a donde aparece la fracción arancelaria. Busca proactivamente el campo "FRACCION ORIGINAL" dentro de estas observaciones.
-  
-  REGLA DE ORO PARA OBSERVACIONES:
-  Para cada partida, extrae TODO el texto del bloque "OBSERVACIONES A NIVEL PARTIDA". No omitas nada. Si dice "FRACCION ORIGINAL" seguido de un número, asegúrate de capturar ese número completo (8 a 10 dígitos).
-  
-  Extrae también:
-  1. IDENTIFICADORES A NIVEL PEDIMENTO (Clave y sus complementos).
-  2. Datos de cada PARTIDA (Número de partida, Fracción, NICO, UMC, Cantidades, Valor Dlls).`;
+  const prompt = `Extrae datos de este pedimento. 
+  Puntos clave:
+  1. Si una partida continúa en otra página, une sus "OBSERVACIONES A NIVEL PARTIDA".
+  2. Captura "FRACCION ORIGINAL" de las observaciones (8-10 dígitos).
+  3. Extrae identificadores de nivel pedimento (V1, IM, etc.) y de cada partida.
+  4. Sé preciso con números y totales.`;
 
   const response = await ai.models.generateContent({
     model,
     contents: [{ parts: [{ text: prompt }, { inlineData: { data: fileBase64, mimeType } }] }],
     config: {
       responseMimeType: "application/json",
-      responseSchema: PEDIMENTO_SCHEMA
+      responseSchema: PEDIMENTO_SCHEMA,
+      thinkingConfig: { thinkingBudget: 0 } // Desactivamos razonamiento profundo para ganar velocidad
     }
   });
 
   const text = response.text;
-  if (!text) throw new Error("No se pudo extraer información del documento.");
+  if (!text) throw new Error("No se pudo extraer información.");
   return JSON.parse(text) as PedimentoData;
 };
