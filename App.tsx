@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import FileUpload from './components/FileUpload';
 import ComparisonTable from './components/ComparisonTable';
 import { extractPedimentoData } from './services/geminiService';
@@ -8,30 +8,56 @@ import { PedimentoData, ComparisonDetail, ProcessingState, PedimentoPartida, Hea
 const App: React.FC = () => {
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
+  const [previewA, setPreviewA] = useState<string | null>(null);
+  const [previewB, setPreviewB] = useState<string | null>(null);
+  const [showPreviews, setShowPreviews] = useState<boolean>(true);
+  
   const [reglaOctava, setReglaOctava] = useState<boolean>(false);
   const [processing, setProcessing] = useState<ProcessingState>({ isProcessing: false, step: '', progress: 0 });
   const [results, setResults] = useState<ComparisonDetail[]>([]);
   const [headerResults, setHeaderResults] = useState<HeaderComparison[]>([]);
 
+  useEffect(() => {
+    if (!fileA) {
+      setPreviewA(null);
+      return;
+    }
+    // Para asegurar que Edge cargue el PDF, usamos una URL limpia y persistente
+    const url = URL.createObjectURL(fileA);
+    setPreviewA(url);
+    return () => URL.revokeObjectURL(url);
+  }, [fileA]);
+
+  useEffect(() => {
+    if (!fileB) {
+      setPreviewB(null);
+      return;
+    }
+    const url = URL.createObjectURL(fileB);
+    setPreviewB(url);
+    return () => URL.revokeObjectURL(url);
+  }, [fileB]);
+
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
-      reader.onload = () => resolve((reader.result as string).split(',')[1]);
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
       reader.onerror = reject;
     });
   };
 
   const applyReglaOctavaLogic = (data: PedimentoData): PedimentoData => {
     if (!reglaOctava) return data;
-
     const updatedPartidas = data.partidas.map(p => {
       if (p.fraccion && p.fraccion.toString().startsWith('98')) {
         if (p.observaciones) {
           const cleanObs = p.observaciones.replace(/\n/g, ' ').replace(/\s+/g, ' ');
           const regex = /(?:FRACCION|FRAC\.?|FRACC)\s+(?:ORIGINAL|ORIG\.?|REAL)[:\-\s]*([0-9\.\s\-]{8,15})/i;
           const match = cleanObs.match(regex);
-          
           if (match && match[1]) {
             const rawFound = match[1].replace(/[^0-9]/g, '');
             if (rawFound.length >= 8) {
@@ -48,7 +74,6 @@ const App: React.FC = () => {
       }
       return p;
     });
-
     return { ...data, partidas: updatedPartidas };
   };
 
@@ -97,11 +122,9 @@ const App: React.FC = () => {
       { name: 'V1', key: 'V1' },
       { name: 'IM', key: 'IM' },
     ];
-
     return fields.map(f => {
       let valA: any;
       let valB: any;
-
       if (f.key === 'V1' || f.key === 'IM') {
         valA = getIdentificadorString(a.identificadores, f.key);
         valB = getIdentificadorString(b.identificadores, f.key);
@@ -109,10 +132,8 @@ const App: React.FC = () => {
         valA = (a as any)[f.key];
         valB = (b as any)[f.key];
       }
-
       const valAStr = String(valA || '').trim().toLowerCase();
       const valBStr = String(valB || '').trim().toLowerCase();
-      
       let status: 'match' | 'mismatch' = 'match';
       if (typeof valA === 'number' && typeof valB === 'number') {
         const tolerance = f.key === 'bultos' || f.key === 'numPartidas' ? 0.1 : 0.01;
@@ -120,14 +141,12 @@ const App: React.FC = () => {
       } else {
         status = valAStr === valBStr ? 'match' : 'mismatch';
       }
-
       return { field: f.name, valA, valB, status };
     });
   };
 
   const handleCompare = async () => {
     if (!fileA || !fileB) return;
-
     setProcessing({ isProcessing: true, step: 'Iniciando Auditoría Flash...', progress: 10 });
     setResults([]);
     setHeaderResults([]);
@@ -136,32 +155,26 @@ const App: React.FC = () => {
       setProcessing(prev => ({ ...prev, step: 'Codificando documentos...', progress: 20 }));
       const [b64A, b64B] = await Promise.all([fileToBase64(fileA), fileToBase64(fileB)]);
       
-      setProcessing(prev => ({ ...prev, step: 'Analizando AMBOS pedimentos en paralelo...', progress: 40 }));
-      
+      setProcessing(prev => ({ ...prev, step: 'Analizando AMBOS pedimentos (Esto puede tardar si hay reintentos de cuota)...', progress: 40 }));
       const [dataA, dataB] = await Promise.all([
         extractPedimentoData(b64A, fileA.type),
         extractPedimentoData(b64B, fileB.type)
       ]);
-
-      setProcessing(prev => ({ ...prev, step: 'Auditando datos...', progress: 85 }));
       
+      setProcessing(prev => ({ ...prev, step: 'Auditando datos...', progress: 85 }));
       let finalA = dataA;
       let finalB = dataB;
       if (reglaOctava) {
         finalA = applyReglaOctavaLogic(dataA);
         finalB = applyReglaOctavaLogic(dataB);
       }
-
       setHeaderResults(compareHeader(finalA, finalB));
-
       const mapA = homogenizeData(finalA);
       const mapB = homogenizeData(finalB);
       const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()]));
-      
       const partidaDetails: ComparisonDetail[] = allKeys.map(key => {
         const pA = mapA.get(key);
         const pB = mapB.get(key);
-        
         let hasDiff = false;
         if (!pA || !pB) {
           hasDiff = true;
@@ -174,17 +187,18 @@ const App: React.FC = () => {
         }
         return { partidaKey: key, pA, pB, hasDiff };
       });
-
       setResults(partidaDetails);
       setProcessing({ isProcessing: false, step: '', progress: 100 });
+      setShowPreviews(true);
     } catch (error: any) {
       console.error(error);
-      setProcessing({ isProcessing: false, step: '', progress: 0, error: error.message || 'Error en el proceso' });
+      const errorMessage = error.message || 'Ocurrió un error inesperado durante el análisis.';
+      setProcessing({ isProcessing: false, step: '', progress: 0, error: errorMessage });
     }
   };
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-slate-100 via-slate-50 to-blue-50 pb-24 text-slate-900">
+    <div className="min-h-screen bg-slate-50 pb-24 text-slate-900 font-sans">
       <header className="bg-white/90 backdrop-blur-md border-b border-slate-200 py-4 shadow-sm sticky top-0 z-50">
         <div className="container mx-auto px-6 flex justify-between items-center">
           <div className="flex items-center space-x-6">
@@ -200,71 +214,49 @@ const App: React.FC = () => {
               <span className="text-[10px] font-bold tracking-[0.2em] text-slate-400 uppercase">Inteligencia Aduanera</span>
             </div>
           </div>
-          <div className="hidden md:flex items-center space-x-2">
-             <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Motor Flash Optimizado</span>
-          </div>
         </div>
       </header>
 
-      <main className="container mx-auto px-6 mt-12 max-w-6xl">
-        <div className="text-center mb-12">
-          <h2 className="text-3xl font-black text-slate-800 tracking-tight text-balance uppercase">Auditoría de Pedimentos</h2>
-          <p className="text-slate-500 mt-2 font-medium">Análisis inteligente para detección de discrepancias y validación de Regla Octava.</p>
-        </div>
+      <main className="container mx-auto px-4 mt-8">
+        <div className="bg-white p-8 rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <FileUpload label="Pedimento SPACE" selectedFile={fileA} onFileSelect={setFileA} />
+            <FileUpload label="Pedimento Contraparte" selectedFile={fileB} onFileSelect={setFileB} />
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-          <FileUpload label="Pedimento SPACE" selectedFile={fileA} onFileSelect={setFileA} />
-          <FileUpload label="Pedimento Contraparte" selectedFile={fileB} onFileSelect={setFileB} />
-        </div>
+          <div className="flex flex-col items-center space-y-6">
+            <label className="inline-flex items-center cursor-pointer group bg-slate-50 px-8 py-4 rounded-3xl border border-slate-200 transition-all">
+              <input 
+                type="checkbox" 
+                className="sr-only peer" 
+                checked={reglaOctava}
+                onChange={(e) => setReglaOctava(e.target.checked)}
+              />
+              <div className="relative w-14 h-7 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-[#003b8e] after:content-[''] after:absolute after:top-[4px] after:start-[4px] after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all"></div>
+              <div className="ms-5">
+                <span className="text-sm font-black text-slate-700 uppercase tracking-tight">Regla Octava</span>
+                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Extraer fracción real de observaciones</p>
+              </div>
+            </label>
 
-        <div className="flex flex-col items-center space-y-6 mb-12">
-          <label className="inline-flex items-center cursor-pointer group bg-white/70 px-8 py-4 rounded-[2rem] border border-slate-200 hover:border-blue-300 hover:bg-white transition-all shadow-xl shadow-slate-200/50">
-            <input 
-              type="checkbox" 
-              className="sr-only peer" 
-              checked={reglaOctava}
-              onChange={(e) => setReglaOctava(e.target.checked)}
-            />
-            <div className="relative w-14 h-7 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:start-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-[#003b8e]"></div>
-            <div className="ms-5">
-              <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-[#003b8e] transition-colors">Regla Octava</span>
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-tight mt-0.5">Sustituye fracciones 98 por fracción real de observaciones</p>
-            </div>
-          </label>
-
-          <div className="w-full max-w-md flex flex-col items-center space-y-4">
             <button
               onClick={handleCompare}
               disabled={!fileA || !fileB || processing.isProcessing}
-              className={`group relative overflow-hidden px-14 py-6 rounded-2xl font-black text-white transition-all shadow-2xl uppercase tracking-[0.2em] text-xs w-full ${
-                !fileA || !fileB || processing.isProcessing
-                ? 'bg-slate-300 cursor-not-allowed grayscale'
-                : 'bg-[#003b8e] hover:bg-[#002b66] hover:shadow-blue-900/30 hover:-translate-y-1 active:translate-y-0 active:shadow-none'
+              className={`px-14 py-5 rounded-2xl font-black text-white transition-all uppercase tracking-widest text-xs ${
+                !fileA || !fileB || processing.isProcessing ? 'bg-slate-300' : 'bg-[#003b8e] hover:bg-[#002b66] shadow-lg hover:shadow-[#003b8e]/20'
               }`}
             >
-              <span className="relative z-10">
-                {processing.isProcessing ? 'Procesando con Flash IA...' : 'Ejecutar Auditoría'}
-              </span>
+              {processing.isProcessing ? 'Procesando...' : 'Ejecutar Auditoría'}
             </button>
 
             {processing.isProcessing && (
-              <div className="w-full space-y-2 animate-in fade-in slide-in-from-top-4 duration-500">
-                <div className="flex justify-between items-end">
-                  <span className="text-[9px] font-black text-[#003b8e] uppercase tracking-widest animate-pulse">
-                    {processing.step}
-                  </span>
-                  <span className="text-[10px] font-black text-slate-400">
-                    {processing.progress}%
-                  </span>
+              <div className="w-full max-w-md space-y-2">
+                <div className="flex justify-between text-[10px] font-black text-[#003b8e] uppercase">
+                  <span>{processing.step}</span>
+                  <span>{processing.progress}%</span>
                 </div>
-                <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden p-0.5 shadow-inner">
-                  <div 
-                    className="h-full bg-gradient-to-r from-[#003b8e] to-blue-500 rounded-full transition-all duration-700 ease-out relative"
-                    style={{ width: `${processing.progress}%` }}
-                  >
-                    <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite] skew-x-12"></div>
-                  </div>
+                <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-[#003b8e] transition-all duration-500" style={{ width: `${processing.progress}%` }}></div>
                 </div>
               </div>
             )}
@@ -272,41 +264,83 @@ const App: React.FC = () => {
         </div>
 
         {processing.error && (
-          <div className="bg-rose-50 border border-rose-200 text-rose-800 p-8 mb-12 rounded-[2rem] shadow-2xl flex items-start space-x-4 animate-in fade-in zoom-in-95">
-            <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          <div className="bg-rose-50 border border-rose-200 text-rose-800 p-6 rounded-3xl mb-8 shadow-lg animate-in slide-in-from-top-4 duration-300">
+            <div className="flex items-center space-x-3 mb-2">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
+              <p className="text-xs font-black uppercase tracking-widest">Atención Requerida</p>
             </div>
-            <div>
-              <h3 className="font-black uppercase text-xs tracking-widest mb-1">Error en el proceso</h3>
-              <p className="text-sm font-semibold opacity-80">{processing.error}</p>
-            </div>
+            <p className="text-sm font-bold opacity-80 leading-relaxed">{processing.error}</p>
           </div>
         )}
 
         {headerResults.length > 0 && (
-          <div className="animate-in fade-in slide-in-from-bottom-12 duration-1000">
-            <ComparisonTable headerDiffs={headerResults} partidaDiffs={results} />
+          <div className="flex flex-col lg:flex-row gap-6 items-start">
+            <div className={`lg:w-1/3 w-full space-y-4 lg:sticky lg:top-24 transition-all duration-500 ${showPreviews ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
+              <div className="flex items-center justify-between px-2">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Documentos de Referencia</h3>
+                <button 
+                  onClick={() => setShowPreviews(false)}
+                  className="text-rose-500 text-[10px] font-black uppercase hover:underline"
+                >
+                  Ocultar
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="bg-slate-800 rounded-3xl overflow-hidden border-4 border-white shadow-xl h-[520px] relative">
+                  <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                    <span className="bg-[#003b8e] text-white text-[8px] font-black px-3 py-1 rounded-full uppercase shadow-md">SPACE</span>
+                  </div>
+                  {previewA ? (
+                    <iframe 
+                      src={previewA} 
+                      className="w-full h-full border-none"
+                      title="Pedimento SPACE"
+                      sandbox="allow-scripts allow-same-origin"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-slate-500 text-[10px] font-black uppercase tracking-widest bg-slate-900">Esperando archivo...</div>
+                  )}
+                </div>
+
+                <div className="bg-slate-800 rounded-3xl overflow-hidden border-4 border-white shadow-xl h-[520px] relative">
+                  <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                    <span className="bg-slate-600 text-white text-[8px] font-black px-3 py-1 rounded-full uppercase shadow-md">Contraparte</span>
+                  </div>
+                  {previewB ? (
+                    <iframe 
+                      src={previewB} 
+                      className="w-full h-full border-none"
+                      title="Pedimento Contraparte"
+                      sandbox="allow-scripts allow-same-origin"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-slate-500 text-[10px] font-black uppercase tracking-widest bg-slate-900">Esperando archivo...</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className={`transition-all duration-500 ${showPreviews ? 'lg:w-2/3 w-full' : 'w-full'}`}>
+              {!showPreviews && (
+                <button 
+                  onClick={() => setShowPreviews(true)}
+                  className="mb-4 bg-white border border-slate-200 px-6 py-2 rounded-full text-[10px] font-black uppercase text-[#003b8e] shadow-sm hover:bg-slate-50"
+                >
+                  Mostrar Referencia PDF
+                </button>
+              )}
+              <ComparisonTable headerDiffs={headerResults} partidaDiffs={results} />
+            </div>
           </div>
         )}
       </main>
 
-      <footer className="mt-24 py-16 border-t border-slate-200 text-center">
-        <div className="container mx-auto px-6">
-          <img src="https://tickets.spaceti.cloud/web/image/website/1/logo/Space%20Aduanas?unique=8cd703e" className="h-8 w-auto mx-auto mb-8 opacity-50" alt="Space Footer" />
-          <p className="text-slate-400 text-[10px] uppercase font-bold tracking-[0.5em] mt-8">
-            &copy; {new Date().getFullYear()} SPACE ADUANAS
-          </p>
-        </div>
+      <footer className="mt-24 py-12 text-center opacity-30">
+        <p className="text-[10px] font-black tracking-[0.5em]">&copy; SPACE ADUANAS AUDITCHECK</p>
       </footer>
-
-      <style>{`
-        @keyframes shimmer {
-          0% { transform: translateX(-200%) skewX(-15deg); }
-          100% { transform: translateX(200%) skewX(-15deg); }
-        }
-      `}</style>
     </div>
   );
 };
